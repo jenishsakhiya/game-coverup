@@ -149,4 +149,4 @@ movement cannot walk.
 
 ## License
 
-Not chosen yet — add a `LICENSE` file and update this line before making the repo public.
+[MIT](LICENSE) — do what you like with it, just keep the copyright notice.
