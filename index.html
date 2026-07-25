@@ -1,0 +1,1080 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>COVERUP</title>
+<style>
+  :root{
+    --bg:#070a10;
+    --open:#10151f;
+    --claim:#12333a;
+    --accent:#2dd4bf;
+    --trail:#fbbf24;
+    --guard:#f43f5e;
+    --dim:#8b97a8;
+    --text:#e6edf5;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:var(--bg);
+    color:var(--text);
+    font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    display:flex;align-items:center;justify-content:center;
+    padding:16px;
+    -webkit-user-select:none;user-select:none;
+  }
+  .wrap{width:100%;max-width:960px}
+
+  header{
+    display:flex;align-items:baseline;gap:14px;
+    margin-bottom:10px;flex-wrap:wrap;
+  }
+  h1{
+    font-size:15px;font-weight:700;letter-spacing:.34em;margin:0;
+    color:var(--accent);
+  }
+  h1 span{color:var(--dim)}
+  .stats{display:flex;gap:18px;margin-left:auto;flex-wrap:wrap}
+  .stat{display:flex;gap:6px;align-items:baseline}
+  .stat b{font-weight:600;color:var(--dim);font-size:11px;letter-spacing:.12em}
+  .stat i{font-style:normal;font-variant-numeric:tabular-nums;font-size:14px}
+  #lives{color:var(--guard);letter-spacing:2px}
+  #pct{color:var(--accent)}
+  #score{color:var(--trail)}
+  #hi{color:#6b7789}
+
+  .bar{
+    height:3px;background:#151b26;border-radius:2px;overflow:hidden;
+    margin-bottom:10px;position:relative;
+  }
+  .bar i{
+    position:absolute;inset:0 auto 0 0;width:0%;
+    background:var(--accent);transition:width .18s ease-out;
+  }
+  .bar u{
+    position:absolute;top:-2px;bottom:-2px;width:1px;
+    background:#3f4a5c;
+  }
+
+  .stage{position:relative;line-height:0}
+  canvas{width:100%;height:auto;display:block;border-radius:3px}
+
+  #overlay{
+    position:absolute;inset:0;display:none;
+    flex-direction:column;align-items:center;justify-content:center;
+    gap:14px;text-align:center;
+    background:rgba(7,10,16,.86);
+    backdrop-filter:blur(3px);
+    border-radius:3px;line-height:1.5;
+  }
+  #overlay.on{display:flex}
+  #otitle{font-size:26px;letter-spacing:.2em;margin:0;color:var(--text)}
+  #osub{margin:0;color:var(--dim);max-width:42ch}
+  #osub b{color:var(--accent);font-weight:600}
+  .key{
+    display:inline-block;padding:2px 7px;margin:0 1px;
+    border:1px solid #2a3342;border-radius:3px;
+    color:var(--text);font-size:11px;
+  }
+  #ohint{margin:6px 0 0;color:#5d6878;font-size:11px}
+
+  footer{margin-top:10px;color:#5d6878;font-size:11px;display:flex;gap:14px;flex-wrap:wrap}
+  footer b{color:var(--dim);font-weight:400}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>COVER<span>UP</span></h1>
+    <div class="stats">
+      <div class="stat"><b>SCORE</b><i id="score">0</i></div>
+      <div class="stat"><b>BEST</b><i id="hi">0</i></div>
+      <div class="stat"><b>LEVEL</b><i id="level">1</i></div>
+      <div class="stat"><b>LIVES</b><i id="lives">◆◆◆</i></div>
+      <div class="stat"><b>COVERED</b><i id="pct">0%</i></div>
+    </div>
+  </header>
+
+  <div class="bar"><i id="fill"></i><u id="mark"></u></div>
+
+  <div class="stage">
+    <canvas id="game"></canvas>
+    <div id="overlay" class="on">
+      <h2 id="otitle">COVERUP</h2>
+      <p id="osub"></p>
+      <p id="ohint"></p>
+    </div>
+  </div>
+
+  <footer>
+    <span><b>walk border</b> hold arrows / wasd</span>
+    <span><b>cut</b> press inward again, then steer</span>
+    <span><b>pause</b> p</span>
+    <span><b>sound</b> m · <span id="mute">on</span></span>
+    <span><b>go</b> space</span>
+  </footer>
+
+</div>
+<script>
+"use strict";
+
+/* ── grid ─────────────────────────────────────────────────────────────── */
+
+const GW = 52, GH = 34, CELL = 18;
+const VW = GW * CELL, VH = GH * CELL;
+const SIZE = GW * GH;
+
+const OUT = 0, SAFE = 1, OPEN = 2, TRAIL = 3;
+
+const grid = new Uint8Array(SIZE);
+const road = new Uint8Array(SIZE);      // cells that are border, and stay border
+const idx = (x, y) => y * GW + x;
+const inGrid = (x, y) => x >= 0 && y >= 0 && x < GW && y < GH;
+
+/* ── arenas ───────────────────────────────────────────────────────────── */
+/* An arena is a polygon in normalised 0..1 space, rasterised to cells. Its
+   border ring becomes safe ground; everything inside starts unclaimed. The
+   rasteriser handles any convex or concave shape — swap in a hexagon or a
+   star here and the rest of the game needs no changes. */
+
+const RECT = [[0, 0], [1, 0], [1, 1], [0, 1]];
+
+function arenaFor(level) {
+  return RECT;
+}
+
+function pointInPoly(px, py, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i], [xj, yj] = poly[j];
+    if ((yi > py) !== (yj > py) && px < (xj - xi) * (py - yi) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+const DIAGS = [[1, 1], [1, -1], [-1, 1], [-1, -1]];
+
+function rasterise(poly) {
+  const arena = new Uint8Array(SIZE);
+  for (let y = 0; y < GH; y++) {
+    for (let x = 0; x < GW; x++) {
+      if (pointInPoly((x + 0.5) / GW, (y + 0.5) / GH, poly)) arena[idx(x, y)] = 1;
+    }
+  }
+
+  // Border ring: arena cells touching the outside on any of 8 sides.
+  const ring = new Uint8Array(SIZE);
+  const seed = [];
+  for (let y = 0; y < GH; y++) {
+    for (let x = 0; x < GW; x++) {
+      if (!arena[idx(x, y)]) continue;
+      let edge = false;
+      for (let dy = -1; dy <= 1 && !edge; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (!dx && !dy) continue;
+          const nx = x + dx, ny = y + dy;
+          if (!inGrid(nx, ny) || !arena[idx(nx, ny)]) { edge = true; break; }
+        }
+      }
+      if (edge) { ring[idx(x, y)] = 1; seed.push(x, y); }
+    }
+  }
+
+  // On angled edges the ring comes out diagonally-linked, which 4-way
+  // movement can't walk. Fill the elbow so the border is always 4-connected.
+  for (let k = 0; k < seed.length; k += 2) {
+    const x = seed[k], y = seed[k + 1];
+    for (const [dx, dy] of DIAGS) {
+      const nx = x + dx, ny = y + dy;
+      if (!inGrid(nx, ny) || !ring[idx(nx, ny)]) continue;
+      const a = idx(x + dx, y), b = idx(x, y + dy);
+      if (ring[a] || ring[b]) continue;
+      if (arena[a]) ring[a] = 1;
+      else if (arena[b]) ring[b] = 1;
+    }
+  }
+
+  for (let i = 0; i < SIZE; i++) {
+    grid[i] = arena[i] ? (ring[i] ? SAFE : OPEN) : OUT;
+    road[i] = ring[i];
+  }
+}
+
+/* ── state ────────────────────────────────────────────────────────────── */
+
+const TARGET = 0.8;
+
+const player = { x: 0, y: 0, px: 0, py: 0, dx: 0, dy: 0, carving: false, ax: 0, ay: 0 };
+let trail = [];
+let guards = [];
+let sparks = [];
+
+let level = 1, lives = 3;
+let score = 0, hiScore = 0;
+let openTotal = 1, openLeft = 1;
+let phase = "title";          // title | play | pause | clear | over
+let freeze = 0, shake = 0, danger = 0, pulse = 0;
+let flash = null;
+let pops = [];
+let levelTime = 0, sparkTimer = 0, sparksToCome = 0;
+let cutArmed = false, cutHint = -1;
+
+const PLAYER_SPEED = 20;       // cells / second
+let stepAcc = 0, stepDue = 1 / PLAYER_SPEED;
+
+try { hiScore = +(localStorage.getItem("coverup.best") || 0) || 0; } catch (e) {}
+
+/* ── level setup ──────────────────────────────────────────────────────── */
+
+function guardCount(l) { return Math.min(4, 1 + Math.floor((l - 1) / 2)); }
+function hunterCount(l) { return l < 4 ? 0 : l < 8 ? 1 : 2; }
+function guardSpeed(l) { return 9.5 + (l - 1) * 0.8; }
+function sparkCount(l) { return l < 5 ? 1 : 2; }
+function sparkSpeed(l) { return 6 + (l - 1) * 0.55; }
+function sparkDelay(l) { return Math.max(2.5, 9 - l * 1.2); }
+
+function buildLevel() {
+  rasterise(arenaFor(level));
+
+  openTotal = 0;
+  for (let i = 0; i < SIZE; i++) if (grid[i] === OPEN) openTotal++;
+  openLeft = openTotal;
+
+  // Player starts on the border, nearest the top-centre.
+  let best = -1, bestD = Infinity;
+  for (let y = 0; y < GH; y++) {
+    for (let x = 0; x < GW; x++) {
+      if (!isRoad(x, y)) continue;
+      const d = Math.abs(x - GW / 2) + y * 2;
+      if (d < bestD) { bestD = d; best = idx(x, y); }
+    }
+  }
+  placePlayer(best % GW, (best - best % GW) / GW);
+
+  const spots = [[.5, .5], [.32, .34], [.68, .66], [.34, .7], [.66, .3]];
+  const angles = [0.62, 2.05, 3.72, 5.31];
+  const speed = guardSpeed(level);
+  const hunters = hunterCount(level);
+  const n = guardCount(level);
+  guards = [];
+  for (let i = 0; i < n; i++) {
+    const [fx, fy] = spots[i % spots.length];
+    const p = findRoom(fx * GW, fy * GH);
+    guards.push({
+      x: p.x, y: p.y, r: 0.44, base: speed, hist: [], cool: 0,
+      vx: Math.cos(angles[i]) * speed, vy: Math.sin(angles[i]) * speed,
+      hunt: i >= n - hunters ? 1.7 : 0,      // the last few actively steer at your line
+    });
+  }
+
+  sparks = [];
+  sparksToCome = sparkCount(level);
+  sparkTimer = sparkDelay(level);
+  levelTime = 0;
+  trail = [];
+  pops = [];
+  flash = null;
+  danger = 0;
+  rebuildBoard();
+  updateHUD();
+}
+
+function placePlayer(x, y) {
+  player.x = player.px = x;
+  player.y = player.py = y;
+  player.dx = player.dy = 0;
+  player.carving = false;
+  player.ax = x; player.ay = y;
+  stepAcc = 0;
+}
+
+// Nearest spot with clear space around it, spiralling out from a target.
+function findRoom(tx, ty) {
+  for (let r = 0; r < Math.max(GW, GH); r++) {
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+        const x = Math.floor(tx) + dx + 0.5, y = Math.floor(ty) + dy + 0.5;
+        if (!blocked(x, y, 0.44)) return { x, y };
+      }
+    }
+  }
+  return { x: GW / 2, y: GH / 2 };
+}
+
+/* ── roads ────────────────────────────────────────────────────────────── */
+/* You walk borders, never the inside of claimed land. A border is the arena's
+   own edge plus every line you have ever cut — those stay walkable for good,
+   even once both of their sides are claimed.
+     That permanence is what keeps the board traversable. Every cut starts and
+   ends on an existing road and is itself a connected path, so the network can
+   only ever grow as one piece. Split the open area into two pockets and the
+   line that split them is a road between them, so neither is ever stranded. */
+
+function isRoad(x, y) {
+  const i = idx(x, y);
+  return grid[i] === SAFE && road[i] === 1;
+}
+
+function nearestBorder(x, y, far) {
+  let pick = -1, pd = far ? -1 : Infinity;
+  for (let cy = 0; cy < GH; cy++) {
+    for (let cx = 0; cx < GW; cx++) {
+      if (!isRoad(cx, cy)) continue;
+      const d = (cx - x) ** 2 + (cy - y) ** 2;
+      if (far ? d > pd : d < pd) { pd = d; pick = idx(cx, cy); }
+    }
+  }
+  return pick;
+}
+
+// A capture can seal the very cell you're standing on. Step off it.
+function snapToBorder() {
+  if (isRoad(player.x, player.y)) return;
+  const i = nearestBorder(player.x, player.y, false);
+  if (i >= 0) placePlayer(i % GW, (i - i % GW) / GW);
+}
+
+/* ── sparks ───────────────────────────────────────────────────────────── */
+/* Sparks crawl the border you're standing on and hunt you along it. They are
+   the reason you can't just park somewhere safe and wait the guards out. */
+
+const NB8 = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+
+function spawnSpark() {
+  const i = nearestBorder(player.x, player.y, true);   // as far from you as the border reaches
+  if (i < 0) return;
+  const x = i % GW, y = (i - i % GW) / GW;
+  sparks.push({ x, y, rx: x, ry: y, dx: 0, dy: 0, from: -1, acc: 0 });
+  beep(1180, .07, "square", .05);
+  setTimeout(() => beep(1180, .07, "square", .05), 130);
+}
+
+function stepSpark(s) {
+  const gap = (x, y) => Math.abs(x - player.x) + Math.abs(y - player.y);
+  const here = idx(s.x, s.y);
+  let pick = null, bestScore = -Infinity;
+  for (const [dx, dy] of NB8) {
+    const nx = s.x + dx, ny = s.y + dy;
+    if (!inGrid(nx, ny) || !isRoad(nx, ny)) continue;
+    let sc = (gap(s.x, s.y) - gap(nx, ny)) * 2      // close on the player
+           + (dx * s.dx + dy * s.dy);               // but keep a smooth heading
+    if (dx && dy) sc -= 0.4;                        // orthogonal runs look better
+    if (idx(nx, ny) === s.from) sc -= 8;            // no jittering back and forth
+    if (sc > bestScore) { bestScore = sc; pick = [dx, dy, nx, ny]; }
+  }
+  if (!pick) return;
+  s.from = here;
+  s.dx = pick[0]; s.dy = pick[1];
+  s.x = pick[2]; s.y = pick[3];
+}
+
+function moveSparks(dt) {
+  const due = 1 / sparkSpeed(level);
+  for (const s of sparks) {
+    s.acc += dt;
+    while (s.acc >= due) { s.acc -= due; stepSpark(s); }
+    const k = Math.min(1, dt * 14);
+    s.rx += (s.x - s.rx) * k;
+    s.ry += (s.y - s.ry) * k;
+  }
+}
+
+// Checked against the drawn positions so a spark can't slip through you
+// between grid steps.
+function sparkCaught() {
+  for (const s of sparks) {
+    if (Math.hypot(s.rx - player.px, s.ry - player.py) < 0.85) return true;
+    if (s.x === player.x && s.y === player.y) return true;
+  }
+  return false;
+}
+
+/* ── movement ─────────────────────────────────────────────────────────── */
+
+function canStep(dx, dy) {
+  const nx = player.x + dx, ny = player.y + dy;
+  if (!inGrid(nx, ny)) return false;
+  const s = grid[idx(nx, ny)];
+  if (s === OUT || s === TRAIL) return false;   // never cross your own line
+  // Claimed land is not a shortcut — only its border carries you.
+  if (s === SAFE && !player.carving && !isRoad(nx, ny)) return false;
+  // Walking the border must never wander off it: a key you are already
+  // holding steers you, it does not commit you to a cut.
+  if (s === OPEN && !player.carving && !cutArmed) return false;
+  return true;
+}
+
+function stepPlayer() {
+  const want = inputDir();
+  cutHint = -1;
+
+  if (!player.carving) {
+    // On the border you move only while a direction is held.
+    if (!want) { player.dx = player.dy = 0; return; }
+    player.dx = want[0]; player.dy = want[1];
+    const nx = player.x + player.dx, ny = player.y + player.dy;
+    if (!cutArmed && inGrid(nx, ny) && grid[idx(nx, ny)] === OPEN) cutHint = idx(nx, ny);
+    if (!canStep(player.dx, player.dy)) return;      // wall, or a cut not asked for
+  } else {
+    // Cutting through open ground: one press sets you going, and you keep
+    // going until you turn or come home.
+    if (want && canStep(want[0], want[1])) { player.dx = want[0]; player.dy = want[1]; }
+    if (!player.dx && !player.dy) return;
+    if (!canStep(player.dx, player.dy)) return;      // stalled against a wall
+  }
+
+  const from = idx(player.x, player.y);
+  player.x += player.dx;
+  player.y += player.dy;
+  const i = idx(player.x, player.y);
+
+  if (grid[i] === OPEN) {
+    if (!player.carving) {
+      player.carving = true;
+      player.ax = from % GW; player.ay = (from - from % GW) / GW;
+      beep(300, .06, "square", .04);
+    }
+    grid[i] = TRAIL;
+    road[i] = 1;                                 // the line you draw is border now
+    trail.push(i);
+    openLeft--;
+  } else if (player.carving) {
+    closeLoop();                                 // reached safe ground again
+  } else {
+    // Walked one step of border on this press. It no longer authorises a cut.
+    cutArmed = false;
+  }
+}
+
+/* ── capture ──────────────────────────────────────────────────────────── */
+
+function guardMask() {
+  const m = new Uint8Array(SIZE);
+  for (const g of guards) {
+    const x0 = Math.floor(g.x - g.r), x1 = Math.floor(g.x + g.r);
+    const y0 = Math.floor(g.y - g.r), y1 = Math.floor(g.y + g.r);
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) if (inGrid(x, y)) m[idx(x, y)] = 1;
+  }
+  return m;
+}
+
+function closeLoop() {
+  const openBefore = openLeft + trail.length;
+  const won = trail.slice();
+  for (const i of trail) grid[i] = SAFE;
+  trail = [];
+  player.carving = false;
+  cutArmed = false;                 // a still-held key must not re-cut instantly
+  cutHint = -1;
+
+  // Every unclaimed pocket with no guard inside it falls to you.
+  const mask = guardMask();
+  const seen = new Uint8Array(SIZE);
+  const stack = [];
+  for (let start = 0; start < SIZE; start++) {
+    if (grid[start] !== OPEN || seen[start]) continue;
+    const region = [];
+    let held = false;
+    stack.length = 0;
+    stack.push(start); seen[start] = 1;
+    while (stack.length) {
+      const i = stack.pop();
+      region.push(i);
+      if (mask[i]) held = true;
+      const x = i % GW, y = (i - x) / GW;
+      if (x > 0 && grid[i - 1] === OPEN && !seen[i - 1]) { seen[i - 1] = 1; stack.push(i - 1); }
+      if (x < GW - 1 && grid[i + 1] === OPEN && !seen[i + 1]) { seen[i + 1] = 1; stack.push(i + 1); }
+      if (y > 0 && grid[i - GW] === OPEN && !seen[i - GW]) { seen[i - GW] = 1; stack.push(i - GW); }
+      if (y < GH - 1 && grid[i + GW] === OPEN && !seen[i + GW]) { seen[i + GW] = 1; stack.push(i + GW); }
+    }
+    if (held) continue;
+    for (const i of region) { grid[i] = SAFE; won.push(i); }
+    openLeft -= region.length;
+  }
+
+  // The whole point: a cut is worth what you dared. Taking a third of what's
+  // left in one sweep pays many times what the same cells pay in nibbles.
+  const share = won.length / Math.max(1, openBefore);
+  const mult = Math.min(12, 1 + Math.floor(share * 14));
+  const gain = won.length * 10 * mult;
+  score += gain;
+
+  let cx = 0, cy = 0;
+  for (const i of won) { const x = i % GW; cx += x; cy += (i - x) / GW; }
+  pops.push({ x: cx / won.length + .5, y: cy / won.length + .5, text: "+" + gain, mult, t: 0 });
+
+  flash = { cells: won, t: 0 };
+  shake = Math.min(1, share * 2.2);
+  chime(mult);
+
+  for (const s of sparks) {
+    if (isRoad(s.x, s.y)) continue;            // its road may be gone now
+    const i = nearestBorder(s.x, s.y, false);
+    if (i < 0) { s.dead = true; continue; }
+    s.x = s.rx = i % GW; s.y = s.ry = (i - i % GW) / GW; s.from = -1;
+  }
+  sparks = sparks.filter(s => !s.dead);
+
+  snapToBorder();
+  rebuildBoard();
+  updateHUD();
+
+  if (covered() >= TARGET) {
+    const bonus = 1500 * lives + Math.max(0, Math.round((100 - levelTime) * 25));
+    score += bonus;
+    phase = "clear";
+    saveHi();
+    updateHUD();
+    showOverlay("LEVEL " + level + " CLEAR",
+      "Covered <b>" + pctText() + "</b> in " + Math.round(levelTime) + "s. Bonus <b>+" + bonus + "</b>.",
+      "Next: " + guardCount(level + 1) + " guard" + (guardCount(level + 1) > 1 ? "s" : "") +
+      (hunterCount(level + 1) ? " (" + hunterCount(level + 1) + " hunting)" : "") +
+      ", " + sparkCount(level + 1) + " spark" + (sparkCount(level + 1) > 1 ? "s" : "") +
+      ". <span class=\"key\">space</span> to continue");
+    fanfare();
+  }
+}
+
+function saveHi() {
+  if (score <= hiScore) return;
+  hiScore = score;
+  try { localStorage.setItem("coverup.best", String(hiScore)); } catch (e) {}
+}
+
+const covered = () => (openTotal - openLeft) / openTotal;
+const pctText = () => Math.floor(covered() * 100) + "%";
+
+/* ── guards ───────────────────────────────────────────────────────────── */
+
+function blocked(x, y, r) {
+  const x0 = Math.floor(x - r), x1 = Math.floor(x + r);
+  const y0 = Math.floor(y - r), y1 = Math.floor(y + r);
+  for (let cy = y0; cy <= y1; cy++) {
+    for (let cx = x0; cx <= x1; cx++) {
+      if (!inGrid(cx, cy)) return true;
+      const s = grid[idx(cx, cy)];
+      if (s === SAFE || s === OUT) return true;
+    }
+  }
+  return false;
+}
+
+function onTrail(x, y, r) {
+  const x0 = Math.floor(x - r), x1 = Math.floor(x + r);
+  const y0 = Math.floor(y - r), y1 = Math.floor(y + r);
+  for (let cy = y0; cy <= y1; cy++) {
+    for (let cx = x0; cx <= x1; cx++) {
+      if (inGrid(cx, cy) && grid[idx(cx, cy)] === TRAIL) return true;
+    }
+  }
+  return false;
+}
+
+function moveGuards(dt) {
+  // Dawdling is not free — every guard leans on the throttle over time.
+  const ramp = Math.min(1.7, 1 + levelTime * 0.014);
+
+  for (const g of guards) {
+    // Hunters bend toward the head of your trail, but only while you're out
+    // there drawing one. Until you commit they're just bouncing.
+    // After a bounce it coasts for a moment, otherwise a hunter aiming at a
+    // trail behind a wall would just buzz against it.
+    g.cool = Math.max(0, g.cool - dt);
+
+    if (g.hunt && trail.length && !g.cool) {
+      const t = trail[trail.length - 1];
+      const tx = (t % GW) + .5, ty = ((t - t % GW) / GW) + .5;
+      const cur = Math.atan2(g.vy, g.vx);
+      const aim = Math.atan2(ty - g.y, tx - g.x);
+      let d = ((aim - cur + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+      const turn = Math.max(-g.hunt * dt, Math.min(g.hunt * dt, d));
+      g.vx = Math.cos(cur + turn); g.vy = Math.sin(cur + turn);
+    }
+
+    const sp = Math.hypot(g.vx, g.vy) || 1;
+    const want = g.base * ramp;
+    g.vx = g.vx / sp * want; g.vy = g.vy / sp * want;
+
+    g.hist.push(g.x, g.y);
+    if (g.hist.length > 16) g.hist.splice(0, 2);
+
+    const far = Math.max(Math.abs(g.vx), Math.abs(g.vy)) * dt;
+    const n = Math.max(1, Math.ceil(far / 0.2));
+    const sub = dt / n;
+    for (let s = 0; s < n; s++) {
+      const nx = g.x + g.vx * sub;
+      if (blocked(nx, g.y, g.r)) { g.vx = -g.vx; g.cool = 0.4; } else g.x = nx;
+      const ny = g.y + g.vy * sub;
+      if (blocked(g.x, ny, g.r)) { g.vy = -g.vy; g.cool = 0.4; } else g.y = ny;
+      if (player.carving && (onTrail(g.x, g.y, g.r) || Math.hypot(g.x - (player.x + .5), g.y - (player.y + .5)) < g.r + .5)) {
+        return killPlayer();
+      }
+    }
+  }
+}
+
+/* ── death ────────────────────────────────────────────────────────────── */
+
+function killPlayer() {
+  // Caught mid-cut: back to where that cut began. Caught on the border by a
+  // spark: stay put, rather than being flung to some old anchor.
+  const wasCutting = trail.length > 0;
+
+  // An unfinished cut is no border at all — take the road back with it.
+  for (const i of trail) { grid[i] = OPEN; road[i] = 0; openLeft++; }
+  trail = [];
+  flash = null;
+  cutArmed = false; cutHint = -1;
+  placePlayer(wasCutting ? player.ax : player.x, wasCutting ? player.ay : player.y);
+  snapToBorder();
+  lives--;
+  shake = 1;
+  freeze = 0.8;
+  danger = 0;
+
+  // Clear the border so you don't respawn straight into a spark, then let
+  // them build back up.
+  sparksToCome += sparks.length;
+  sparks = [];
+  sparkTimer = 3.5;
+
+  rebuildBoard();
+  updateHUD();
+  beep(150, .45, "sawtooth", .09);
+  setTimeout(() => beep(96, .5, "sawtooth", .08), 90);
+
+  if (lives <= 0) {
+    phase = "over";
+    saveHi();
+    updateHUD();
+    showOverlay("CAUGHT",
+      "Level <b>" + level + "</b> · covered <b>" + pctText() + "</b> · scored <b>" + score + "</b>." +
+      (score >= hiScore ? "<br>A new best." : ""),
+      "<span class=\"key\">space</span> to start over");
+  }
+}
+
+/* ── sound ────────────────────────────────────────────────────────────── */
+
+let muted = false, actx = null;
+
+function beep(freq, dur, type, gain) {
+  if (muted) return;
+  try {
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.type = type || "square";
+    o.frequency.value = freq;
+    o.connect(g); g.connect(actx.destination);
+    const t = actx.currentTime;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(gain == null ? .06 : gain, t + .012);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.start(t); o.stop(t + dur + .02);
+  } catch (e) { /* no audio, no problem */ }
+}
+
+// Rises higher the bolder the cut was — the reward you can hear.
+function chime(mult) {
+  const notes = Math.min(6, 1 + Math.floor(mult / 2));
+  for (let i = 0; i < notes; i++) {
+    setTimeout(() => beep(392 * Math.pow(2, (i * 4 + mult) / 12), .16, "triangle", .05), i * 58);
+  }
+}
+
+function fanfare() {
+  [0, 4, 7, 12].forEach((n, i) => setTimeout(() => beep(523 * Math.pow(2, n / 12), .22, "triangle", .06), i * 95));
+}
+
+/* ── canvas ───────────────────────────────────────────────────────────── */
+
+const cv = document.getElementById("game");
+const ctx = cv.getContext("2d");
+const board = document.createElement("canvas");
+const bctx = board.getContext("2d");
+const DPR = Math.min(2, window.devicePixelRatio || 1);
+
+for (const [c, x] of [[cv, ctx], [board, bctx]]) {
+  c.width = VW * DPR; c.height = VH * DPR;
+  x.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+
+const COL = {
+  bg: "#070a10", open: "#10151f", dot: "rgba(255,255,255,.05)",
+  sealed: "#0d2027", walk: "#17414a", wall: "#1e2836",
+  edge: "#2dd4bf", road: "#2b6b74", trail: "#fbbf24",
+  player: "#f2f7fb", guard: "#f43f5e", spark: "#c084fc",
+};
+
+function rebuildBoard() {
+  bctx.fillStyle = COL.bg;
+  bctx.fillRect(0, 0, VW, VH);
+
+  // unclaimed field
+  bctx.fillStyle = COL.open;
+  for (let y = 0; y < GH; y++) {
+    for (let x = 0; x < GW; x++) {
+      if (grid[idx(x, y)] !== OUT) bctx.fillRect(x * CELL, y * CELL, CELL, CELL);
+    }
+  }
+  bctx.fillStyle = COL.dot;
+  for (let y = 2; y < GH; y += 3) for (let x = 2; x < GW; x += 3) bctx.fillRect(x * CELL + 7, y * CELL + 7, 2, 2);
+
+  // claimed territory — roads stay lit, sealed ground goes dead
+  for (let y = 0; y < GH; y++) {
+    for (let x = 0; x < GW; x++) {
+      if (grid[idx(x, y)] !== SAFE) continue;
+      bctx.fillStyle = isRoad(x, y) ? COL.walk : COL.sealed;
+      bctx.fillRect(x * CELL, y * CELL, CELL, CELL);
+    }
+  }
+
+  const t = 2;
+
+  // a hairline down every road, so the network you've built reads at a glance
+  // even where it runs between two claimed regions
+  bctx.fillStyle = COL.road;
+  for (let y = 0; y < GH; y++) {
+    for (let x = 0; x < GW; x++) {
+      if (!isRoad(x, y)) continue;
+      const X = x * CELL, Y = y * CELL, m = CELL / 2 - 1;
+      if (inGrid(x - 1, y) && isRoad(x - 1, y)) bctx.fillRect(X, Y + m, CELL / 2 + 1, 2);
+      if (inGrid(x + 1, y) && isRoad(x + 1, y)) bctx.fillRect(X + m, Y + m, CELL / 2 + 1, 2);
+      if (inGrid(x, y - 1) && isRoad(x, y - 1)) bctx.fillRect(X + m, Y, 2, CELL / 2 + 1);
+      if (inGrid(x, y + 1) && isRoad(x, y + 1)) bctx.fillRect(X + m, Y + m, 2, CELL / 2 + 1);
+    }
+  }
+
+  // the live edge: every face where a road meets open ground
+  bctx.fillStyle = COL.edge;
+  for (let y = 0; y < GH; y++) {
+    for (let x = 0; x < GW; x++) {
+      if (!isRoad(x, y)) continue;
+      const X = x * CELL, Y = y * CELL;
+      if (inGrid(x, y - 1) && grid[idx(x, y - 1)] === OPEN) bctx.fillRect(X, Y, CELL, t);
+      if (inGrid(x, y + 1) && grid[idx(x, y + 1)] === OPEN) bctx.fillRect(X, Y + CELL - t, CELL, t);
+      if (inGrid(x - 1, y) && grid[idx(x - 1, y)] === OPEN) bctx.fillRect(X, Y, t, CELL);
+      if (inGrid(x + 1, y) && grid[idx(x + 1, y)] === OPEN) bctx.fillRect(X + CELL - t, Y, t, CELL);
+    }
+  }
+
+  // the arena silhouette, so the polygon still reads once its edge is sealed
+  bctx.fillStyle = COL.wall;
+  for (let y = 0; y < GH; y++) {
+    for (let x = 0; x < GW; x++) {
+      if (grid[idx(x, y)] === OUT) continue;
+      const X = x * CELL, Y = y * CELL;
+      if (!inGrid(x, y - 1) || grid[idx(x, y - 1)] === OUT) bctx.fillRect(X, Y, CELL, t);
+      if (!inGrid(x, y + 1) || grid[idx(x, y + 1)] === OUT) bctx.fillRect(X, Y + CELL - t, CELL, t);
+      if (!inGrid(x - 1, y) || grid[idx(x - 1, y)] === OUT) bctx.fillRect(X, Y, t, CELL);
+      if (!inGrid(x + 1, y) || grid[idx(x + 1, y)] === OUT) bctx.fillRect(X + CELL - t, Y, t, CELL);
+    }
+  }
+}
+
+function draw() {
+  ctx.save();
+  if (shake > 0) ctx.translate((Math.random() - .5) * 9 * shake, (Math.random() - .5) * 9 * shake);
+  ctx.drawImage(board, 0, 0, VW, VH);
+
+  if (flash && flash.t < 1) {
+    ctx.fillStyle = "rgba(45,212,191," + (0.5 * (1 - flash.t)).toFixed(3) + ")";
+    for (const i of flash.cells) {
+      const x = i % GW, y = (i - x) / GW;
+      ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
+    }
+  }
+
+  // trail
+  if (trail.length) {
+    ctx.shadowColor = COL.trail; ctx.shadowBlur = 10;
+    ctx.fillStyle = COL.trail;
+    for (const i of trail) {
+      const x = i % GW, y = (i - x) / GW;
+      ctx.fillRect(x * CELL + 4, y * CELL + 4, CELL - 8, CELL - 8);
+    }
+    ctx.shadowBlur = 0;
+  }
+
+  // "press again and you're cutting here" — the held key alone won't do it
+  if (cutHint >= 0) {
+    const x = cutHint % GW, y = (cutHint - cutHint % GW) / GW;
+    ctx.strokeStyle = COL.trail;
+    ctx.globalAlpha = .35 + Math.sin(pulse * 2.4) * .25;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([4, 3]);
+    ctx.strokeRect(x * CELL + 2, y * CELL + 2, CELL - 4, CELL - 4);
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+  }
+
+  // player
+  const PX = player.px * CELL, PY = player.py * CELL;
+  ctx.shadowColor = player.carving ? COL.trail : COL.edge; ctx.shadowBlur = 12;
+  ctx.fillStyle = COL.player;
+  ctx.fillRect(PX + 2, PY + 2, CELL - 4, CELL - 4);
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = player.carving ? COL.trail : COL.edge;
+  ctx.fillRect(PX + 5, PY + 5, CELL - 10, CELL - 10);
+
+  // guards, with a short wake so you can read where they're headed
+  for (const g of guards) {
+    for (let i = 0; i < g.hist.length; i += 2) {
+      const a = (i / g.hist.length) * .3;
+      ctx.fillStyle = "rgba(244,63,94," + a.toFixed(3) + ")";
+      ctx.beginPath();
+      ctx.arc(g.hist[i] * CELL, g.hist[i + 1] * CELL, g.r * CELL * (.3 + a), 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.shadowColor = COL.guard; ctx.shadowBlur = 16;
+    ctx.fillStyle = COL.guard;
+    ctx.beginPath();
+    ctx.arc(g.x * CELL, g.y * CELL, g.r * CELL, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    // hunters wear a ring, so you know which one is coming for you
+    if (g.hunt) {
+      ctx.strokeStyle = "#ffe3ea"; ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(g.x * CELL, g.y * CELL, g.r * CELL + 3.5, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.fillStyle = "rgba(255,255,255,.85)";
+    ctx.beginPath();
+    ctx.arc(g.x * CELL - 1.5, g.y * CELL - 1.5, g.r * CELL * .32, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // sparks
+  for (const s of sparks) {
+    const X = (s.rx + .5) * CELL, Y = (s.ry + .5) * CELL;
+    ctx.shadowColor = COL.spark; ctx.shadowBlur = 14;
+    ctx.fillStyle = COL.spark;
+    ctx.beginPath();
+    for (let i = 0; i < 8; i++) {                     // spinning four-point star
+      const a = pulse * .9 + i * Math.PI / 4;
+      const r = CELL * (i % 2 ? .18 : .46);
+      const fn = i ? "lineTo" : "moveTo";
+      ctx[fn](X + Math.cos(a) * r, Y + Math.sin(a) * r);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+
+  // score popups
+  ctx.textAlign = "center";
+  for (const p of pops) {
+    ctx.globalAlpha = Math.max(0, 1 - p.t);
+    const Y = p.y * CELL - p.t * 30;
+    ctx.fillStyle = COL.edge;
+    ctx.font = "700 15px ui-monospace,monospace";
+    ctx.fillText(p.text, p.x * CELL, Y);
+    if (p.mult > 1) {
+      ctx.fillStyle = COL.trail;
+      ctx.font = "700 20px ui-monospace,monospace";
+      ctx.fillText("×" + p.mult, p.x * CELL, Y + 21);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  if (danger > 0.02) {
+    ctx.globalAlpha = Math.min(1, danger);
+    ctx.fillStyle = vignette();
+    ctx.fillRect(0, 0, VW, VH);
+    ctx.globalAlpha = 1;
+  }
+
+  if (freeze > 0) {
+    ctx.fillStyle = "rgba(244,63,94," + (0.3 * Math.min(1, freeze)).toFixed(3) + ")";
+    ctx.fillRect(0, 0, VW, VH);
+  }
+  ctx.restore();
+}
+
+let vign = null;
+function vignette() {
+  if (!vign) {
+    vign = ctx.createRadialGradient(VW / 2, VH / 2, Math.min(VW, VH) * .22, VW / 2, VH / 2, Math.max(VW, VH) * .62);
+    vign.addColorStop(0, "rgba(244,63,94,0)");
+    vign.addColorStop(1, "rgba(244,63,94,.6)");
+  }
+  return vign;
+}
+
+/* ── input ────────────────────────────────────────────────────────────── */
+
+const DIRS = {
+  ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0],
+  w: [0, -1], s: [0, 1], a: [-1, 0], d: [1, 0],
+};
+const held = [];
+let swipeDir = null;              // a swipe stands in for a held key on touch
+
+function inputDir() {
+  if (held.length) return DIRS[held[held.length - 1]];
+  return swipeDir;
+}
+
+addEventListener("keydown", e => {
+  const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+
+  if (k === " " || k === "Enter") {
+    e.preventDefault();
+    if (phase === "title" || phase === "over") newGame();
+    else if (phase === "clear") { level++; start(); }
+    else if (phase === "pause") { phase = "play"; hideOverlay(); }
+    return;
+  }
+  if (k === "m") {
+    muted = !muted;
+    $("mute").textContent = muted ? "off" : "on";
+    return;
+  }
+  if (k === "p" && (phase === "play" || phase === "pause")) {
+    if (phase === "play") { phase = "pause"; showOverlay("PAUSED", "", "<span class=\"key\">p</span> or <span class=\"key\">space</span> to resume"); }
+    else { phase = "play"; hideOverlay(); }
+    return;
+  }
+  if (!DIRS[k]) return;
+  e.preventDefault();
+  // A new press arms a cut. Auto-repeat while held does not, which is what
+  // keeps you on the border when you're only walking it.
+  if (!held.includes(k)) { held.push(k); cutArmed = true; }
+});
+
+addEventListener("keyup", e => {
+  const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  const i = held.indexOf(k);
+  if (i >= 0) held.splice(i, 1);
+});
+
+addEventListener("blur", () => { held.length = 0; });
+
+// swipe, so it plays on a phone too
+let touch = null;
+cv.addEventListener("touchstart", e => { touch = e.touches[0]; e.preventDefault(); }, { passive: false });
+cv.addEventListener("touchend", e => {
+  if (!touch) return;
+  const t = e.changedTouches[0];
+  const dx = t.clientX - touch.clientX, dy = t.clientY - touch.clientY;
+  touch = null;
+  if (Math.abs(dx) < 18 && Math.abs(dy) < 18) {
+    swipeDir = null;                                  // tap = stop
+    if (phase === "title" || phase === "over") newGame();
+    else if (phase === "clear") { level++; start(); }
+    return;
+  }
+  swipeDir = Math.abs(dx) > Math.abs(dy) ? [Math.sign(dx), 0] : [0, Math.sign(dy)];
+  cutArmed = true;                                    // each swipe is a fresh press
+}, { passive: false });
+
+/* ── hud & overlay ────────────────────────────────────────────────────── */
+
+const $ = id => document.getElementById(id);
+$("mark").style.left = (TARGET * 100) + "%";
+
+function updateHUD() {
+  $("score").textContent = score;
+  $("hi").textContent = Math.max(hiScore, score);
+  $("level").textContent = level;
+  $("lives").textContent = "◆".repeat(Math.max(0, lives)) || "—";
+  $("pct").textContent = pctText();
+  $("fill").style.width = Math.min(100, covered() * 100) + "%";
+}
+
+function showOverlay(title, sub, hint) {
+  $("otitle").textContent = title;
+  $("osub").innerHTML = sub;
+  $("ohint").innerHTML = hint || "";
+  $("overlay").classList.add("on");
+}
+function hideOverlay() { $("overlay").classList.remove("on"); }
+
+showOverlay("COVERUP",
+  "<b>Hold</b> a direction to walk the lit border — holding it will never carry you off the edge. To cut inward, <b>press again</b> where the dashes appear, and you keep going until you turn or reach a border — everything you fence off is yours, as long as no guard is inside it.<br><br>" +
+  "Cut small and you earn almost nothing. Take a third of the board in one sweep and it pays <b>many times over</b>.",
+  "Guards bounce, hunters steer at your line, and sparks crawl the border after you — there is nowhere to wait. " +
+  "<span class=\"key\">space</span> to play");
+
+/* ── loop ─────────────────────────────────────────────────────────────── */
+
+function newGame() { level = 1; lives = 3; score = 0; start(); }
+
+function start() {
+  buildLevel();
+  freeze = 0; shake = 0;
+  held.length = 0; swipeDir = null;
+  cutArmed = false; cutHint = -1;
+  phase = "play";
+  hideOverlay();
+}
+
+let last = performance.now();
+
+function frame(now) {
+  let dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+
+  pulse += dt * 3;
+  if (shake > 0) shake = Math.max(0, shake - dt * 4);
+  if (flash) flash.t += dt * 3.2;
+  for (const p of pops) p.t += dt * 0.85;
+  if (pops.length) pops = pops.filter(p => p.t < 1);
+
+  if (phase === "play") {
+    if (freeze > 0) {
+      freeze -= dt;
+    } else {
+      levelTime += dt;
+
+      if (sparksToCome > 0) {
+        sparkTimer -= dt;
+        if (sparkTimer <= 0) { spawnSpark(); sparksToCome--; sparkTimer = 7; }
+      }
+
+      moveGuards(dt);
+      if (phase === "play") moveSparks(dt);
+
+      // how close is anything to killing you right now
+      let d = 0;
+      const hx = player.px + .5, hy = player.py + .5;
+      if (player.carving) {
+        for (const g of guards) d = Math.max(d, (9 - Math.hypot(g.x - hx, g.y - hy)) / 9);
+      }
+      for (const s of sparks) d = Math.max(d, (5 - Math.hypot(s.rx + .5 - hx, s.ry + .5 - hy)) / 5);
+      danger = Math.max(0, Math.min(1, d));
+
+      stepAcc += dt;
+      while (stepAcc >= stepDue && phase === "play" && freeze <= 0) {
+        stepAcc -= stepDue;
+        const ox = player.x, oy = player.y;
+        stepPlayer();
+        // Slide only for a real step — a capture can snap us somewhere else.
+        if (Math.abs(player.x - ox) + Math.abs(player.y - oy) === 1) { player.px = ox; player.py = oy; }
+      }
+      // slide the sprite between cells
+      const k = Math.min(1, stepAcc / stepDue);
+      player.px += (player.x - player.px) * Math.min(1, k * 1.6 + 0.35);
+      player.py += (player.y - player.py) * Math.min(1, k * 1.6 + 0.35);
+
+      if (phase === "play" && freeze <= 0 && sparkCaught()) killPlayer();
+    }
+  } else {
+    player.px = player.x; player.py = player.y;
+  }
+
+  draw();
+  requestAnimationFrame(frame);
+}
+
+buildLevel();
+draw();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
